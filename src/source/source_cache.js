@@ -14,6 +14,7 @@ import browser from '../util/browser';
 import { OverscaledTileID } from './tile_id';
 import assert from 'assert';
 import SourceFeatureState from './source_state';
+import RBush from "rbush";
 
 import type {Source} from './source';
 import type Map from '../ui/map';
@@ -96,6 +97,7 @@ class SourceCache extends Evented {
 
         this._coveredTiles = {};
         this._state = new SourceFeatureState();
+        this._validTiles = null;
     }
 
     onAdd(map: Map) {
@@ -142,6 +144,58 @@ class SourceCache extends Evented {
         this._shouldReloadOnResume = false;
         if (shouldReload) this.reload();
         if (this.transform) this.update(this.transform);
+    }
+
+    _tileCornerToCoord (x, y, tiles) {
+        const lng = (x / tiles) * 360.0 - 180.0;
+        const n = Math.PI - 2 * Math.PI * y / tiles;
+        const lat = (180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))));
+        return [lng, lat];
+    }
+
+    _calcTileBbox (tileId)
+    {
+        const tiles = Math.pow(2, tileId.canonical.z);
+        const sw = this._tileCornerToCoord(tileId.canonical.x, tileId.canonical.y + 1, tiles);
+        const ne = this._tileCornerToCoord(tileId.canonical.x + 1, tileId.canonical.y, tiles);
+
+        return {
+            minX: sw[0],
+            minY: sw[1],
+            maxX: ne[0],
+            maxY: ne[1]
+        };
+    }
+
+    setSourceBounds(sourceBounds: Array<LngLatBoundsLike>) {
+        if (!sourceBounds)
+        {
+            this._sourceFilterBboxes = null;
+            return;
+        }
+
+        this._sourceFilterBboxes = new RBush();
+        const rbushItems = sourceBounds.map(bounds => {
+            return {
+                minX: bounds[0],
+                minY: bounds[1],
+                maxX: bounds[2],
+                maxY: bounds[3]
+            };
+        });
+        this._sourceFilterBboxes.load(rbushItems);
+    }
+
+    checkSourceBounds(tileId) {
+        if (this._sourceFilterBboxes) {
+            const bbox = this._calcTileBbox(tileId);
+            if (!this._sourceFilterBboxes.collides(bbox))
+            {
+                console.log(`ignoring tile ${this._source.id} -> ${tileId.toString()}`);
+                return false;
+            }
+        }
+        return true;
     }
 
     _loadTile(tile: Tile, callback: Callback<void>) {
@@ -658,9 +712,14 @@ class SourceCache extends Evented {
         }
 
         const cached = Boolean(tile);
+        const required = this.checkSourceBounds(tileID);
         if (!cached) {
             tile = new Tile(tileID, this._source.tileSize * tileID.overscaleFactor());
-            this._loadTile(tile, this._tileLoaded.bind(this, tile, tileID.key, tile.state));
+            tile.required = required;
+            if (required)
+                this._loadTile(tile, this._tileLoaded.bind(this, tile, tileID.key, tile.state));
+            else
+                tile.state = "loaded";
         }
 
         // Impossible, but silence flow.
@@ -668,7 +727,7 @@ class SourceCache extends Evented {
 
         tile.uses++;
         this._tiles[tileID.key] = tile;
-        if (!cached) this._source.fire(new Event('dataloading', {tile, coord: tile.tileID, dataType: 'source'}));
+        if (!cached && required) this._source.fire(new Event('dataloading', {tile, coord: tile.tileID, dataType: 'source'}));
 
         return tile;
     }
@@ -711,8 +770,11 @@ class SourceCache extends Evented {
             this._cache.add(tile.tileID, tile, tile.getExpiryTimeout());
         } else {
             tile.aborted = true;
-            this._abortTile(tile);
-            this._unloadTile(tile);
+            if (tile.required)
+            {
+                this._abortTile(tile);
+                this._unloadTile(tile);
+            }
         }
     }
 

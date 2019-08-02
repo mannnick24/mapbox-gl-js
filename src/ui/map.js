@@ -1347,6 +1347,11 @@ class Map extends Camera {
         return this._update(true);
     }
 
+    setSourceBoundsFilter(sourceId: string, sourceBounds: Array<LngLatBoundsLike>) {
+        this.style.setSourceBoundsFilter(sourceId, sourceBounds);
+        return this._update(true);
+    }
+
     /**
      * Sets the zoom extent for the specified style layer.
      *

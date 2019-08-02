@@ -767,6 +767,12 @@ class Style extends Evented {
         this._updateLayer(layer);
     }
 
+    setSourceBoundsFilter(sourceId: string, sourceBounds: Array<LngLatBoundsLike>) {
+        this._checkLoaded();
+        const sourceCache = this.sourceCaches[sourceId];
+        sourceCache.setSourceBounds(sourceBounds);
+    }
+
     /**
      * Get a layer's filter object
      * @param {string} layer the layer to inspect
